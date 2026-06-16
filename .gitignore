@@ -1,0 +1,12 @@
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
+*.mp3
+*.aac
+output/
+temp/
+__pycache__/
+*.pyc
+.env
