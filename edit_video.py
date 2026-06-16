@@ -5,11 +5,7 @@ Edits a green screen video with backgrounds, B-rolls, zoom effects,
 split screen, background music, and audio effects.
 
 Usage:
-    python3 edit_video.py --input video_original.mp4
-
-Requirements:
-    pip install requests
-    ffmpeg must be installed (brew install ffmpeg / apt install ffmpeg)
+    python3 edit_video.py --input "Quick Avatar Video_1080p.mp4"
 """
 
 import subprocess
@@ -48,7 +44,6 @@ AUDIO = {
     "transition_sfx": "https://pikaso.cdnpk.net/private/production/4617452184/a20a35f8-1bdb-4063-bea6-f2bbdd34e2f7.mp3?token=exp=1782000000~hmac=19ea6f8d8efc3f7868cd4514fe236a5b077b9a3ba9360f11f4508d6e48d758a5",
 }
 
-# Scene map from video analysis (timestamps in seconds)
 SCENES = [
     {"num": 1,  "start": 0,  "end": 2,  "label": "Opening Hook",         "bg": "office_1",     "broll": None,              "zoom": "in",    "split": False},
     {"num": 2,  "start": 2,  "end": 6,  "label": "Opening Hook",         "bg": "office_1",     "broll": None,              "zoom": None,    "split": False},
@@ -64,9 +59,9 @@ SCENES = [
 ]
 
 
-def download_asset(name: str, url: str, ext: str) -> Path:
+def download_asset(name, url, ext):
     path = ASSETS_DIR / f"{name}.{ext}"
-    if path.exists():
+    if path.exists() and path.stat().st_size > 1000:
         print(f"  [skip] {name} already downloaded")
         return path
     print(f"  [download] {name}...")
@@ -80,7 +75,7 @@ def download_asset(name: str, url: str, ext: str) -> Path:
 
 
 def download_all_assets():
-    print("\n=== Downloading Assets ===")
+    print("\n=== Baixando Assets ===")
     for name, url in BACKGROUNDS.items():
         ext = "png" if ".png" in url else "jpg"
         download_asset(f"bg_{name}", url, ext)
@@ -88,29 +83,30 @@ def download_all_assets():
         download_asset(f"broll_{name}", url, "mp4")
     for name, url in AUDIO.items():
         download_asset(name, url, "mp3")
-    print("All assets downloaded!\n")
+    print("Todos os assets baixados!\n")
 
 
-def run_ffmpeg(args: list, desc: str = ""):
+def run_ffmpeg(args, desc=""):
     if desc:
         print(f"  [ffmpeg] {desc}...")
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"] + args
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  [ERRO] {result.stderr[:500]}")
+        raise RuntimeError(f"FFmpeg failed: {desc}")
 
 
-def step1_extract_audio(input_video: str):
-    """Extract original narration audio."""
-    print("\n=== Step 1: Extracting Audio ===")
+def step1_extract_audio(input_video):
+    print("\n=== Passo 1: Extraindo Audio da Narracao ===")
     run_ffmpeg([
         "-i", input_video,
         "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
         str(TEMP_DIR / "narration.wav")
-    ], "Extracting narration audio")
+    ], "Extraindo audio")
 
 
-def step2_chromakey_segments(input_video: str):
-    """Remove green screen and composite with backgrounds for each scene."""
-    print("\n=== Step 2: Chromakey + Background Compositing ===")
+def step2_chromakey_segments(input_video):
+    print("\n=== Passo 2: Chromakey + Fundos ===")
     for scene in SCENES:
         bg_name = scene["bg"]
         ext = "png" if "dashboard" in bg_name else "jpg"
@@ -118,25 +114,32 @@ def step2_chromakey_segments(input_video: str):
         seg_out = TEMP_DIR / f"scene_{scene['num']:02d}.mp4"
         duration = scene["end"] - scene["start"]
 
-        zoom_filter = ""
         if scene["zoom"] == "in":
-            zoom_filter = (
-                f",scale=2*iw:2*ih,"
-                f"zoompan=z='min(zoom+0.002,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":d={duration * 30}:s=1920x1080:fps=30"
+            chromakey_filter = (
+                f"[1:v]scale=1920:1080,setsar=1[bg];"
+                f"[0:v]chromakey=0x00b140:0.28:0.12,format=yuva420p[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[comp];"
+                f"[comp]scale=3840:2160,"
+                f"zoompan=z='min(zoom+0.0015,1.25)'"
+                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                f":d={duration * 30}:s=1920x1080:fps=30[out]"
             )
         elif scene["zoom"] == "out":
-            zoom_filter = (
-                f",scale=2*iw:2*ih,"
-                f"zoompan=z='if(eq(on,1),1.3,max(zoom-0.002,1.0))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":d={duration * 30}:s=1920x1080:fps=30"
+            chromakey_filter = (
+                f"[1:v]scale=1920:1080,setsar=1[bg];"
+                f"[0:v]chromakey=0x00b140:0.28:0.12,format=yuva420p[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[comp];"
+                f"[comp]scale=3840:2160,"
+                f"zoompan=z='if(eq(on,1),1.25,max(zoom-0.0015,1.0))'"
+                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                f":d={duration * 30}:s=1920x1080:fps=30[out]"
             )
-
-        chromakey_filter = (
-            f"[0:v]chromakey=0x00FF00:0.25:0.1,format=yuva420p[fg];"
-            f"[1:v]scale=1920:1080,setsar=1[bg_scaled];"
-            f"[bg_scaled][fg]overlay=(W-w)/2:(H-h)/2{zoom_filter}[out]"
-        )
+        else:
+            chromakey_filter = (
+                f"[1:v]scale=1920:1080,setsar=1[bg];"
+                f"[0:v]chromakey=0x00b140:0.28:0.12,format=yuva420p[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
+            )
 
         run_ffmpeg([
             "-ss", str(scene["start"]),
@@ -149,12 +152,11 @@ def step2_chromakey_segments(input_video: str):
             "-r", "30", "-pix_fmt", "yuv420p",
             "-t", str(duration),
             str(seg_out)
-        ], f"Scene {scene['num']}: {scene['label']} ({duration}s)")
+        ], f"Cena {scene['num']}: {scene['label']} ({duration}s)")
 
 
 def step3_broll_overlays():
-    """Create B-roll split-screen and overlay versions."""
-    print("\n=== Step 3: B-Roll Split Screen & Overlays ===")
+    print("\n=== Passo 3: B-Rolls (Split Screen e PiP) ===")
     for scene in SCENES:
         if not scene["broll"]:
             continue
@@ -165,17 +167,16 @@ def step3_broll_overlays():
         duration = scene["end"] - scene["start"]
 
         if scene["split"]:
-            # Split screen: presenter on left, B-roll on right
             filter_complex = (
-                f"[0:v]scale=960:1080,setsar=1[left];"
+                f"[0:v]crop=iw/2:ih:iw/4:0,scale=960:1080,setsar=1[left];"
                 f"[1:v]scale=960:1080,setsar=1[right];"
                 f"[left][right]hstack=inputs=2[out]"
             )
         else:
-            # B-roll picture-in-picture (bottom-right corner)
             filter_complex = (
                 f"[1:v]scale=480:270,setsar=1[pip];"
-                f"[0:v][pip]overlay=W-w-30:H-h-30:enable='between(t,1,{min(duration, 4)})'[out]"
+                f"[0:v][pip]overlay=W-w-20:H-h-20"
+                f":enable='between(t,0.5,{min(duration - 0.5, 4.5)})'[out]"
             )
 
         run_ffmpeg([
@@ -188,14 +189,13 @@ def step3_broll_overlays():
             "-r", "30", "-pix_fmt", "yuv420p",
             "-t", str(duration),
             str(seg_out)
-        ], f"B-Roll scene {scene['num']}: {'split screen' if scene['split'] else 'PiP'}")
+        ], f"B-Roll cena {scene['num']}: {'split screen' if scene['split'] else 'PiP'}")
 
         os.replace(str(seg_out), str(seg_in))
 
 
 def step4_concatenate_scenes():
-    """Concatenate all scene segments into one video."""
-    print("\n=== Step 4: Concatenating Scenes ===")
+    print("\n=== Passo 4: Juntando Todas as Cenas ===")
     concat_file = TEMP_DIR / "concat.txt"
     with open(concat_file, "w") as f:
         for scene in SCENES:
@@ -208,22 +208,18 @@ def step4_concatenate_scenes():
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-r", "30", "-pix_fmt", "yuv420p",
         str(TEMP_DIR / "video_no_audio.mp4")
-    ], "Joining all scenes")
+    ], "Concatenando cenas")
 
 
 def step5_mix_audio():
-    """Mix narration + background music + transition SFX."""
-    print("\n=== Step 5: Mixing Audio ===")
+    print("\n=== Passo 5: Mixando Audio (Narracao + Musica + SFX) ===")
 
-    # Transition timestamps (between scenes)
     transition_times = [s["start"] for s in SCENES if s["start"] > 0]
+
     sfx_filters = ""
-    sfx_inputs = ""
-    sfx_idx = 3
     for i, t in enumerate(transition_times):
-        sfx_inputs += f"-i {ASSETS_DIR / 'transition_sfx.mp3'} "
-        sfx_filters += f"[{sfx_idx}:a]adelay={int(t * 1000)}|{int(t * 1000)},volume=0.4[sfx{i}];"
-        sfx_idx += 1
+        idx = 2 + i
+        sfx_filters += f"[{idx}:a]adelay={int(t * 1000)}|{int(t * 1000)},volume=0.3[sfx{i}];"
 
     mix_labels = "[narr][music_low]"
     for i in range(len(transition_times)):
@@ -232,7 +228,7 @@ def step5_mix_audio():
     n_inputs = 2 + len(transition_times)
     filter_audio = (
         f"[0:a]volume=1.0[narr];"
-        f"[1:a]volume=0.12,afade=t=in:st=0:d=2,afade=t=out:st=87:d=4[music_low];"
+        f"[1:a]volume=0.10,afade=t=in:st=0:d=3,afade=t=out:st=85:d=6[music_low];"
         f"{sfx_filters}"
         f"{mix_labels}amix=inputs={n_inputs}:duration=first:dropout_transition=3[final_audio]"
     )
@@ -251,12 +247,11 @@ def step5_mix_audio():
         str(TEMP_DIR / "mixed_audio.m4a")
     ]
 
-    run_ffmpeg(cmd_parts, "Mixing narration + music + SFX")
+    run_ffmpeg(cmd_parts, "Mixando narracao + musica + efeitos")
 
 
 def step6_final_compose():
-    """Combine final video with mixed audio."""
-    print("\n=== Step 6: Final Composition ===")
+    print("\n=== Passo 6: Composicao Final ===")
     output = OUTPUT_DIR / "video_editado_final.mp4"
 
     run_ffmpeg([
@@ -267,35 +262,37 @@ def step6_final_compose():
         "-shortest",
         "-movflags", "+faststart",
         str(output)
-    ], "Creating final video")
+    ], "Gerando video final")
 
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"\n{'='*50}")
     print(f"  VIDEO PRONTO!")
     print(f"  Arquivo: {output}")
     print(f"  Tamanho: {size_mb:.1f} MB")
-    print(f"{'='*50}\n")
+    print(f"{'='*50}")
+    print(f"\n  Abra com: open {output}")
+    print(f"  Ou: vlc {output}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FotiVidio - Professional Video Editor")
-    parser.add_argument("--input", "-i", required=True, help="Path to original green screen video")
-    parser.add_argument("--skip-download", action="store_true", help="Skip asset download (if already downloaded)")
+    parser = argparse.ArgumentParser(description="FotiVidio - Editor de Video Profissional")
+    parser.add_argument("--input", "-i", required=True, help="Caminho do video com fundo verde")
+    parser.add_argument("--skip-download", action="store_true", help="Pular download dos assets")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"Error: Input video not found: {args.input}")
+        print(f"ERRO: Video nao encontrado: {args.input}")
         sys.exit(1)
 
     for d in [ASSETS_DIR, OUTPUT_DIR, TEMP_DIR]:
         d.mkdir(exist_ok=True)
 
     print("=" * 50)
-    print("  FotiVidio - Professional Video Editor")
+    print("  FotiVidio - Editor de Video Profissional")
     print("=" * 50)
-    print(f"  Input: {args.input}")
-    print(f"  Effects: Chromakey, Zoom, Split Screen, B-Rolls")
-    print(f"  Audio: Background Music + Transition SFX")
+    print(f"  Video: {args.input}")
+    print(f"  Efeitos: Chromakey, Zoom, Split Screen, B-Rolls")
+    print(f"  Audio: Musica de Fundo + Efeitos de Transicao")
     print("=" * 50)
 
     if not args.skip_download:
